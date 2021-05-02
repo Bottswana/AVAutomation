@@ -6,6 +6,13 @@ using Microsoft.Extensions.Configuration;
 
 namespace AVAutomation.Classes
 {
+    public enum EpsonPowerStatus
+    {
+        On,
+        Off,
+        Unknown
+    }
+    
     public class EpsonController : IDisposable
     {
         private readonly SerialPort _Port = new SerialPort();
@@ -37,17 +44,17 @@ namespace AVAutomation.Classes
         /// Get Projector Power Status
         /// </summary>
         /// <returns></returns>
-        public bool GetPowerStatus()
+        public EpsonPowerStatus GetPowerStatus()
         {
             try
             {
                 var PowerStatus = _ExecuteCommand("PWR?\r\n");
-                return PowerStatus.Contains("PWR=01") || PowerStatus.Contains("PWR=02"); 
+                return (PowerStatus.Contains("PWR=01") || PowerStatus.Contains("PWR=02")) ? EpsonPowerStatus.On : EpsonPowerStatus.Off;
             }
             catch( Exception Ex )
             {
                 Log.Error(Ex, "Error requesting projector power status");
-                return false;
+                return EpsonPowerStatus.Unknown;
             }
         }
 
@@ -76,7 +83,8 @@ namespace AVAutomation.Classes
             // Write command to Projector
             var CommandBytes = Encoding.ASCII.GetBytes(Command);
             _Port.Write(CommandBytes, 0, CommandBytes.Length);
-            Log.Information($"Projector Command: {Command}");
+            Log.Information("Projector Command: {Command}", Command);
+            _Port.ReadTimeout = 5000;
             
             // Read response (Up to the : From the Projector)
             var ResponseData = new StringBuilder();
@@ -85,7 +93,7 @@ namespace AVAutomation.Classes
                 // Read next byte
                 var ResponseArray = new byte[1];
                 if( _Port.Read(ResponseArray, 0, 1) != 1 ) throw new Exception("Failed to read response");
-                Log.Debug($"Read byte from Projector {ResponseArray[0]}");
+                Log.Debug("Read byte from Projector {ResponseArray}", ResponseArray[0]);
                 
                 // Check if this byte is a :
                 if( ResponseArray[0] == 0x3A ) break;
@@ -93,7 +101,7 @@ namespace AVAutomation.Classes
             }
             
             // Check for Projector Error
-            Log.Information($"Projector response: {ResponseData}");
+            Log.Information("Projector response: {ResponseData}", ResponseData);
             if( ResponseData.ToString().Contains("ERR") )
             {
                 throw new Exception($"Projector Error: {ResponseData}");

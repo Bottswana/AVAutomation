@@ -2,31 +2,31 @@ using System;
 using Serilog;
 using System.IO;
 using System.Reflection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.AspNetCore.Hosting;
+using AVAutomation.Classes;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 
 namespace AVAutomation
 {
     public class Program
     {
-        /// <summary>
-        /// The current configuration file we are using to load global and app specific settings
-        /// </summary>
-        public static string ApplicationConfigFile { get; private set; } = null;
+        private static ScreenController Screen;
+        private static EpsonController Projector;
+        private static SonyController Amp;
         
         /// <summary>
         /// Application Entry Point
-        /// Configure configuration & application logging, then hand over control to Kestrel
         /// </summary>
         /// <param name="args">Optional command line arguments</param>
         public static void Main(string[] args)
         {
+            string ApplicationConfigFile = null;
+            
             // Configuration File Discovery
-            var ExecutablePath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().CodeBase)?.Replace("file:\\", "")?.Replace("file:", "");
-            if( ApplicationConfigFile == null && ExecutablePath != null )
+            var ExecutablePath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)?.Replace("file:\\", "")?.Replace("file:", "");
+            if( ExecutablePath != null )
             {
-                // Check the current directory (standard asp.net core implementation)
+                // Check the current directory
                 var ProjectAppConfig = Path.Combine(ExecutablePath, "appsettings.json");
                 if( File.Exists(ProjectAppConfig) )
                 {
@@ -43,44 +43,72 @@ namespace AVAutomation
             }
 
             // Log Configuration
-            var LoggingConfig = new ConfigurationBuilder().AddJsonFile(ApplicationConfigFile).Build();
-            Log.Logger = new LoggerConfiguration().ReadFrom.Configuration(LoggingConfig).WriteTo.Console().CreateLogger();
+            var Config = new ConfigurationBuilder().AddJsonFile(ApplicationConfigFile).Build();
+            Log.Logger = new LoggerConfiguration().ReadFrom.Configuration(Config).WriteTo.Console().CreateLogger();
             
-            // Start Kestrel
+            // Initialise Classes
+            Projector = new EpsonController(Config);
+            Screen = new ScreenController(Config);
+            Amp = new SonyController(Config);
+
+            // Run Task
+            var TheTask = Task.Run(DoMonitor);
+            TheTask.Wait();
+        }
+        
+        /// <summary>
+        /// Monitor for Projector power on and trigger the screen as appropriate
+        /// </summary>
+        private static async Task DoMonitor()
+        {
             try
             {
-                CreateWebHostBuilder().Build().Run();
+                var IsPoweredOn = false;
+                while( true )
+                {
+                    // Poll projector state
+                    var ProjectorState = Projector.GetPowerStatus();
+                    if( ProjectorState == EpsonPowerStatus.On && !IsPoweredOn )
+                    {
+                        // Power on system
+                        Log.Information("Projector powered on, turning on components");
+                        IsPoweredOn = true;
+                        
+                        Screen.LowerScreen();
+                        try
+                        {
+                            await Amp.AmpPowerRequest("active");
+                        }
+                        catch( Exception Ex )
+                        {
+                            Log.Error(Ex, "Amp API Error");
+                        }
+                    }
+                    else if( ProjectorState == EpsonPowerStatus.Off && IsPoweredOn )
+                    {
+                        // Power off system
+                        Log.Information("Projector powered off, shutting down components");
+                        IsPoweredOn = false;
+                        
+                        Screen.RaiseScreen();
+                        try
+                        {
+                            await Amp.AmpPowerRequest("off");
+                        }
+                        catch( Exception Ex )
+                        {
+                            Log.Error(Ex, "Amp API Error");
+                        }
+                    }
+                    
+                    // Wait 5 seconds
+                    await Task.Delay(TimeSpan.FromSeconds(5));
+                }
             }
             catch( Exception Ex )
             {
-                Log.Fatal(Ex, "Host terminated unexpectedly");
+                Log.Error(Ex, "Exception Thrown");
             }
-            finally
-            {
-                Log.CloseAndFlush();
-            }
-        }
-
-        /// <summary>
-        /// Create the Kestrel instance
-        /// </summary>
-        /// <returns>IWebHostBuilder Instance</returns>
-        private static IWebHostBuilder CreateWebHostBuilder()
-        {
-            return new WebHostBuilder()
-            .UseKestrel()
-            .UseStartup<Startup>()
-            .UseUrls("http://0.0.0.0:5000")
-            .UseContentRoot(Directory.GetCurrentDirectory())
-            .ConfigureLogging(logging => logging.AddSerilog())
-            .UseDefaultServiceProvider((context, options) =>
-            {
-                options.ValidateScopes = context.HostingEnvironment.IsDevelopment();
-            })
-            .ConfigureAppConfiguration( (config) =>
-            {
-                config.AddJsonFile(ApplicationConfigFile, optional: false, reloadOnChange: true);
-            });
         }
     }
 }
